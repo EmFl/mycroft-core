@@ -83,6 +83,7 @@ class Thing(Enum):
     TEMPERATURE = auto()  # Control desired high and low temperatures
     HEAT = auto()  # Control desired low temperature
     AIR_CONDITIONING = auto()  # Control desired high temperature
+    COVER = auto()
 
 
 @unique
@@ -118,6 +119,8 @@ class State(Enum):
     UNLOCKED = auto()
     OCCUPIED = auto()
     UNOCCUPIED = auto()
+    LOWERED = auto()
+    RAISED = auto()
 
 
 @unique
@@ -141,6 +144,7 @@ class Action(Enum):
     LOCATE = auto()
     LOCK = auto()
     UNLOCK = auto()
+    STOP = auto()
 
 
 @total_ordering
