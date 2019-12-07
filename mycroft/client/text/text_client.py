@@ -14,7 +14,6 @@
 #
 import sys
 import io
-import signal
 from math import ceil
 
 from .gui_server import start_qml_gui
@@ -119,9 +118,6 @@ def ctrl_c_pressed():
         return True
     else:
         return False
-
-
-signal.signal(signal.SIGINT, ctrl_c_handler)
 
 
 ##############################################################################
@@ -318,10 +314,10 @@ class MicMonitorThread(Thread):
         with io.open(self.filename, 'r') as fh:
             line = fh.readline()
             # Just adjust meter settings
-            # Ex:Energy:  cur=4 thresh=1.5
-            parts = line.split("=")
-            meter_thresh = float(parts[-1])
-            meter_cur = float(parts[-2].split(" ")[0])
+            # Ex:Energy:  cur=4 thresh=1.5 muted=0
+            cur_text, thresh_text, _ = line.split(' ')[-3:]
+            meter_thresh = float(thresh_text.split('=')[-1])
+            meter_cur = float(cur_text.split('=')[-1])
 
 
 class ScreenDrawThread(Thread):
@@ -696,7 +692,6 @@ def do_draw_main(scr):
     scr.addstr(1, curses.COLS-1-len(ver), ver, CLR_HEADING)
 
     y = 2
-    len_line = 0
     for i in range(start, end):
         if i >= cLogs - 1:
             log = '   ^--- NEWEST ---^ '
@@ -704,15 +699,15 @@ def do_draw_main(scr):
             log = filteredLog[i]
         logid = log[0]
         if len(log) > 25 and log[5] == '-' and log[8] == '-':
-            log = log[27:]  # skip logid & date/time at the front of log line
+            log = log[11:]  # skip logid & date at the front of log line
         else:
             log = log[1:]   # just skip the logid
 
         # Categorize log line
-        if " - DEBUG - " in log:
+        if "| DEBUG    |" in log:
             log = log.replace("Skills ", "")
             clr = CLR_LOG_DEBUG
-        elif " - ERROR - " in log:
+        elif "| ERROR    |" in log:
             clr = CLR_LOG_ERROR
         else:
             if logid == "1":

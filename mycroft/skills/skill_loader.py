@@ -22,6 +22,7 @@ from time import time
 from mycroft.configuration import Configuration
 from mycroft.messagebus import Message
 from mycroft.util.log import LOG
+from .settings import SettingsMetaUploader
 
 SKILL_MAIN_MODULE = '__init__.py'
 
@@ -66,10 +67,7 @@ class SkillLoader:
         self.last_loaded = 0
         self.instance = None
         self.active = True
-
-    @property
-    def config(self):
-        return Configuration.get()
+        self.config = Configuration.get()
 
     @property
     def is_blacklisted(self):
@@ -86,7 +84,13 @@ class SkillLoader:
         Returns:
              bool: if the skill was loaded/reloaded
         """
-        self.last_modified = _get_last_modified_time(self.skill_directory)
+        try:
+            self.last_modified = _get_last_modified_time(self.skill_directory)
+        except FileNotFoundError as e:
+            LOG.error('Failed to get last_modification time '
+                      '({})'.format(repr(e)))
+            self.last_modified = self.last_loaded
+
         modified = self.last_modified > self.last_loaded
 
         # create local reference to avoid threading issues
@@ -170,6 +174,7 @@ class SkillLoader:
 
         self.last_loaded = time()
         self._communicate_load_status()
+        self._upload_settings_meta()
 
     def _prepare_for_load(self):
         self.load_attempted = True
@@ -219,11 +224,9 @@ class SkillLoader:
 
         if self.instance:
             self.instance.skill_id = self.skill_id
-            self.instance.settings.allow_overwrite = True
-            self.instance.settings.load_skill_settings_from_file()
             self.instance.bind(self.bus)
             try:
-                self.instance.load_data_files(self.skill_directory)
+                self.instance.load_data_files()
                 # Set up intent handlers
                 # TODO: can this be a public method?
                 self.instance._register_decorated()
@@ -232,7 +235,7 @@ class SkillLoader:
             except Exception as e:
                 # If an exception occurs, make sure to clean up the skill
                 self.instance.default_shutdown()
-                self.instane = None
+                self.instance = None
                 log_msg = 'Skill initialization failed with {}'
                 LOG.exception(log_msg.format(repr(e)))
 
@@ -272,3 +275,12 @@ class SkillLoader:
             )
             self.bus.emit(message)
             LOG.error('Skill {} failed to load'.format(self.skill_id))
+
+    def _upload_settings_meta(self):
+        if self.loaded:
+            settings_meta = SettingsMetaUploader(
+                self.skill_directory,
+                self.instance.name
+            )
+            settings_meta.upload()
+            self.instance.settings_meta = settings_meta

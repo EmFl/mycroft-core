@@ -28,6 +28,7 @@ class TestSkillManager(MycroftUnitTestBase):
     def setUp(self):
         super().setUp()
         self._mock_skill_updater()
+        self._mock_skill_settings_downloader()
         self.skill_manager = SkillManager(self.message_bus_mock)
         self._mock_skill_loader_instance()
 
@@ -38,6 +39,14 @@ class TestSkillManager(MycroftUnitTestBase):
             self.create_msm_mock = msm_patch.start()
             self.msm_mock = mock_msm(str(self.temp_dir))
             self.create_msm_mock.return_value = self.msm_mock
+
+    def _mock_skill_settings_downloader(self):
+        settings_download_patch = patch(
+            self.mock_package + 'SkillSettingsDownloader',
+            spec=True
+        )
+        self.addCleanup(settings_download_patch.stop)
+        self.settings_download_mock = settings_download_patch.start()
 
     def _mock_skill_updater(self):
         skill_updater_patch = patch(
@@ -71,7 +80,10 @@ class TestSkillManager(MycroftUnitTestBase):
             'skillmanager.deactivate',
             'skillmanager.keep',
             'skillmanager.activate',
-            'mycroft.paired'
+            'mycroft.paired',
+            'mycroft.skills.is_alive',
+            'mycroft.skills.all_loaded',
+            'mycroft.skills.settings.update'
         ]
         self.assertListEqual(
             expected_result,
@@ -107,7 +119,7 @@ class TestSkillManager(MycroftUnitTestBase):
         self.msm_mock.all_skills = [skill]
         self.skill_manager.load_priority()
 
-        self.assertTrue(skill.install.called)
+        self.assertTrue(self.msm_mock.install.called)
         load_mock.assert_called_once_with(skill.path)
 
     def test_priority_skill_not_recognized(self):
@@ -243,7 +255,8 @@ class TestSkillManager(MycroftUnitTestBase):
         self.skill_updater_mock.next_download = 0
         self.skill_manager.handle_paired(None)
         updater = self.skill_manager.skill_updater
-        updater.post_manifest.assert_called_once_with()
+        updater.post_manifest.assert_called_once_with(
+            reload_skills_manifest=True)
 
     def test_deactivate_skill(self):
         message = Mock()

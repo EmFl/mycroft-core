@@ -23,6 +23,7 @@ from mycroft.configuration import Configuration
 from mycroft.messagebus.message import Message
 from mycroft.util.log import LOG
 from .msm_wrapper import create_msm as msm_creator, build_msm_config
+from .settings import SkillSettingsDownloader
 from .skill_loader import SkillLoader
 from .skill_updater import SkillUpdater
 
@@ -42,13 +43,20 @@ class SkillManager(Thread):
         self.bus = bus
         self._stop_event = Event()
         self._connected_event = Event()
+        self.config = Configuration.get()
+
         self.skill_loaders = {}
         self.enclosure = EnclosureAPI(bus)
         self.initial_load_complete = False
         self.num_install_retries = 0
+        self.settings_downloader = SkillSettingsDownloader(self.bus)
         self._define_message_bus_events()
         self.skill_updater = SkillUpdater()
         self.daemon = True
+
+        # Statuses
+        self._alive_status = False  # True after priority skills has loaded
+        self._loaded_status = False  # True after all skills has loaded
 
     def _define_message_bus_events(self):
         """Define message bus events with handlers defined in this class."""
@@ -68,14 +76,16 @@ class SkillManager(Thread):
         self.bus.on('skillmanager.keep', self.deactivate_except)
         self.bus.on('skillmanager.activate', self.activate_skill)
         self.bus.on('mycroft.paired', self.handle_paired)
-
-    @property
-    def config(self):
-        return Configuration.get()
+        self.bus.on('mycroft.skills.is_alive', self.is_alive)
+        self.bus.on('mycroft.skills.all_loaded', self.is_all_loaded)
+        self.bus.on(
+            'mycroft.skills.settings.update',
+            self.settings_downloader.download
+        )
 
     @property
     def skills_config(self):
-        return Configuration.get()['skills']
+        return self.config['skills']
 
     @property
     def msm(self):
@@ -98,7 +108,7 @@ class SkillManager(Thread):
 
     def handle_paired(self, _):
         """Trigger upload of skills manifest after pairing."""
-        self.skill_updater.post_manifest()
+        self.skill_updater.post_manifest(reload_skills_manifest=True)
 
     def load_priority(self):
         skills = {skill.name: skill for skill in self.msm.all_skills}
@@ -108,7 +118,7 @@ class SkillManager(Thread):
             if skill is not None:
                 if not skill.is_local:
                     try:
-                        skill.install()
+                        self.msm.install(skill)
                     except Exception:
                         log_msg = 'Downloading priority skill: {} failed'
                         LOG.exception(log_msg.format(skill_name))
@@ -119,20 +129,32 @@ class SkillManager(Thread):
                     'Priority skill {} can\'t be found'.format(skill_name)
                 )
 
+        self._alive_status = True
+
     def run(self):
         """Load skills and update periodically from disk and internet."""
         self._remove_git_locks()
         self._connected_event.wait()
         self._load_on_startup()
 
+        # Update sync backend and skills.
+        self.skill_updater.post_manifest(reload_skills_manifest=True)
+        self.settings_downloader.download()
+
         # Scan the file folder that contains Skills.  If a Skill is updated,
         # unload the existing version from memory and reload from the disk.
         while not self._stop_event.is_set():
-            self._reload_modified_skills()
-            self._load_new_skills()
-            self._unload_removed_skills()
-            self._update_skills()
-            sleep(2)  # Pause briefly before beginning next scan
+            try:
+                self._reload_modified_skills()
+                self._load_new_skills()
+                self._unload_removed_skills()
+                self._update_skills()
+                sleep(2)  # Pause briefly before beginning next scan
+            except Exception:
+                LOG.exception('Something really unexpected has occured '
+                              'and the skill manager loop safety harness was '
+                              'hit.')
+                sleep(30)
 
     def _remove_git_locks(self):
         """If git gets killed from an abrupt shutdown it leaves lock files."""
@@ -146,13 +168,24 @@ class SkillManager(Thread):
         self._load_new_skills()
         LOG.info("Skills all loaded!")
         self.bus.emit(Message('mycroft.skills.initialized'))
+        self._loaded_status = True
 
     def _reload_modified_skills(self):
         """Handle reload of recently changed skill(s)"""
+        reload_occured = False
         for skill_dir in self._get_skill_directories():
-            skill_loader = self.skill_loaders.get(skill_dir)
-            if skill_loader is not None and skill_loader.reload_needed():
-                skill_loader.reload()
+            try:
+                skill_loader = self.skill_loaders.get(skill_dir)
+                if skill_loader is not None and skill_loader.reload_needed():
+                    skill_loader.reload()
+                    reload_occured = True
+            except Exception:
+                LOG.exception('Unhandled exception occured while '
+                              'reloading {}'.format(skill_dir))
+
+        if reload_occured:
+            # If a reload occured a skill gid may have changed.
+            self.skill_updater.post_manifest(reload_skills_manifest=True)
 
     def _load_new_skills(self):
         """Handle load of skills installed since startup."""
@@ -161,8 +194,8 @@ class SkillManager(Thread):
                 self._load_skill(skill_dir)
 
     def _load_skill(self, skill_directory):
+        skill_loader = SkillLoader(self.bus, skill_directory)
         try:
-            skill_loader = SkillLoader(self.bus, skill_directory)
             skill_loader.load()
         except Exception:
             LOG.exception('Load of skill {} failed!'.format(skill_directory))
@@ -207,6 +240,21 @@ class SkillManager(Thread):
         )
         if do_skill_update:
             self.skill_updater.update_skills()
+
+    def is_alive(self, message=None):
+        """Respond to is_alive status request."""
+        if message:
+            status = {'status': self._alive_status}
+            self.bus.emit(message.response(data=status))
+        return self._alive_status
+
+    def is_all_loaded(self, message=None):
+        """ Respond to all_loaded status request."""
+        if message:
+            status = {'status': self._loaded_status}
+            self.bus.emit(message.response(data=status))
+
+        return self._loaded_status
 
     def send_skill_list(self, _):
         """Send list of loaded skills."""
@@ -260,6 +308,7 @@ class SkillManager(Thread):
     def stop(self):
         """Tell the manager to shutdown."""
         self._stop_event.set()
+        self.settings_downloader.stop_downloading()
 
         # Do a clean shutdown of all skills
         for skill_loader in self.skill_loaders.values():
@@ -289,7 +338,7 @@ class SkillManager(Thread):
                     break
                 try:
                     self._emit_converse_response(message, skill_loader)
-                except BaseException as e:
+                except Exception:
                     error_message = 'exception in converse method'
                     LOG.exception(error_message)
                     self._emit_converse_error(message, skill_id, error_message)

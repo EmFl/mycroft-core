@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright 2017 Mycroft AI Inc.
 #
@@ -90,7 +89,7 @@ FRACTION_STRING_SV = {
 EXTRA_SPACE = " "
 
 
-def nice_number_sv(number, speech, denominators):
+def nice_number_sv(number, speech, denominators=range(1, 21)):
     """ Swedish helper for nice_number
 
     This function formats a float to human understandable functions. Like

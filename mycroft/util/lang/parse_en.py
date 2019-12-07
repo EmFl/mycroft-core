@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright 2017 Mycroft AI Inc.
 #
@@ -605,7 +604,7 @@ def extractnumber_en(text, short_scale=True, ordinals=False):
                                    was found
 
     """
-    return _extract_number_with_text_en(_tokenize(text),
+    return _extract_number_with_text_en(_tokenize(text.replace("%", "")),
                                         short_scale, ordinals).value
 
 
@@ -828,7 +827,7 @@ def extract_datetime_en(string, dateNow, default_time):
               wordNext == "after" and
               wordNextNext == "tomorrow" and
               not fromFlag and
-              not wordPrev[0].isdigit()):
+              not (wordPrev[0].isdigit() if wordPrev else False)):
             dayOffset = 2
             used = 3
             if wordPrev == "the":
@@ -1043,8 +1042,6 @@ def extract_datetime_en(string, dateNow, default_time):
                 minOffset = 15
                 if idx > 2 and words[idx - 3] in markers:
                     words[idx - 3] = ""
-                    if words[idx - 3] == "this":
-                        daySpecified = True
                 words[idx - 2] = ""
             elif wordPrev == "within":
                 hrOffset = 1
@@ -1119,18 +1116,6 @@ def extract_datetime_en(string, dateNow, default_time):
                         remainder = nextWord
                         used += 1
 
-                    elif wordNext == "in" and wordNextNext == "the" and \
-                            words[idx + 3] == "morning":
-                        remainder = "am"
-                        used += 3
-                    elif wordNext == "in" and wordNextNext == "the" and \
-                            words[idx + 3] == "afternoon":
-                        remainder = "pm"
-                        used += 3
-                    elif wordNext == "in" and wordNextNext == "the" and \
-                            words[idx + 3] == "evening":
-                        remainder = "pm"
-                        used += 3
                     elif wordNext == "in" and wordNextNext == "morning":
                         remainder = "am"
                         used += 2

@@ -12,14 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-from copy import copy
-
-import json
-import requests
-from requests import HTTPError, RequestException
 import os
 import time
-from threading import Lock
+from copy import copy, deepcopy
+
+import requests
+from requests import HTTPError, RequestException
 
 from mycroft.configuration import Configuration
 from mycroft.configuration.config import DEFAULT_CONFIG, SYSTEM_CONFIG, \
@@ -38,6 +36,9 @@ class BackendDown(RequestException):
 
 class InternetDown(RequestException):
     pass
+
+
+UUID = '{MYCROFT_UUID}'
 
 
 class Api:
@@ -61,6 +62,8 @@ class Api:
 
     def request(self, params):
         self.check_token()
+        if 'path' in params:
+            params['path'] = params['path'].replace(UUID, self.identity.uuid)
         self.build_path(params)
         self.old_params = copy(params)
         return self.send(params)
@@ -219,8 +222,6 @@ class Api:
 
 class DeviceApi(Api):
     """ Web API wrapper for obtaining device-level information """
-    _skill_settings_lock = Lock()
-    _skill_settings = None
 
     def __init__(self):
         super(DeviceApi, self).__init__("device")
@@ -270,7 +271,7 @@ class DeviceApi(Api):
 
         return self.request({
             "method": "PATCH",
-            "path": "/" + self.identity.uuid,
+            "path": "/" + UUID,
             "json": {"coreVersion": version.get("coreVersion"),
                      "platform": platform,
                      "platform_build": platform_build,
@@ -280,21 +281,21 @@ class DeviceApi(Api):
     def send_email(self, title, body, sender):
         return self.request({
             "method": "PUT",
-            "path": "/" + self.identity.uuid + "/message",
+            "path": "/" + UUID + "/message",
             "json": {"title": title, "body": body, "sender": sender}
         })
 
     def report_metric(self, name, data):
         return self.request({
             "method": "POST",
-            "path": "/" + self.identity.uuid + "/metric/" + name,
+            "path": "/" + UUID + "/metric/" + name,
             "json": data
         })
 
     def get(self):
         """ Retrieve all device information from the web backend """
         return self.request({
-            "path": "/" + self.identity.uuid
+            "path": "/" + UUID
         })
 
     def get_settings(self):
@@ -304,7 +305,7 @@ class DeviceApi(Api):
             str: JSON string with user configuration information.
         """
         return self.request({
-            "path": "/" + self.identity.uuid + "/setting"
+            "path": "/" + UUID + "/setting"
         })
 
     def get_location(self):
@@ -314,7 +315,7 @@ class DeviceApi(Api):
             str: JSON string with user location.
         """
         return self.request({
-            "path": "/" + self.identity.uuid + "/location"
+            "path": "/" + UUID + "/location"
         })
 
     def get_subscription(self):
@@ -325,7 +326,7 @@ class DeviceApi(Api):
             Returns: dictionary with subscription information
         """
         return self.request({
-            'path': '/' + self.identity.uuid + '/subscription'})
+            'path': '/' + UUID + '/subscription'})
 
     @property
     def is_subscriber(self):
@@ -344,7 +345,7 @@ class DeviceApi(Api):
         archs = {'x86_64': 'x86_64', 'armv7l': 'arm', 'aarch64': 'arm'}
         arch = archs.get(get_arch())
         if arch:
-            path = '/' + self.identity.uuid + '/voice?arch=' + arch
+            path = '/' + UUID + '/voice?arch=' + arch
             return self.request({'path': path})['link']
 
     def get_oauth_token(self, dev_cred):
@@ -359,51 +360,27 @@ class DeviceApi(Api):
         """
         return self.request({
             "method": "GET",
-            "path": "/" + self.identity.uuid + "/token/" + str(dev_cred)
+            "path": "/" + UUID + "/token/" + str(dev_cred)
         })
 
     def get_skill_settings(self):
-        """ Fetch all skill settings. """
-        with DeviceApi._skill_settings_lock:
-            if (DeviceApi._skill_settings is None or
-                    time.monotonic() > DeviceApi._skill_settings[0] + 30):
-                DeviceApi._skill_settings = (
-                    time.monotonic(),
-                    self.request({
-                        "method": "GET",
-                        "path": "/" + self.identity.uuid + "/skill"
-                        })
-                )
-            return DeviceApi._skill_settings[1]
+        """Get the remote skill settings for all skills on this device."""
+        return self.request({
+            "method": "GET",
+            "path": "/" + UUID + "/skill/settings",
+        })
 
     def upload_skill_metadata(self, settings_meta):
-        """ Upload skill metadata.
+        """Upload skill metadata.
 
         Arguments:
-            settings_meta (dict): settings_meta typecasted to suite the backend
+            settings_meta (dict): skill info and settings in JSON format
         """
         return self.request({
             "method": "PUT",
-            "path": "/" + self.identity.uuid + "/skill",
+            "path": "/" + UUID + "/settingsMeta",
             "json": settings_meta
         })
-
-    def delete_skill_metadata(self, skill_gid):
-        """ Delete the current skill metadata from backend
-
-            TODO: Real implementation when method exists on backend
-        Args:
-            skill_gid (str): skill_gid identifying the skill
-        """
-        try:
-            LOG.debug("Deleting remote metadata for {}".format(skill_gid))
-            self.request({
-                "method": "DELETE",
-                "path": ("/" + self.identity.uuid + "/skill" +
-                         "/{}".format(skill_gid))
-            })
-        except Exception as e:
-            LOG.error("{} cannot delete metadata because this".format(e))
 
     def upload_skills_data(self, data):
         """ Upload skills.json file. This file contains a manifest of installed
@@ -415,17 +392,18 @@ class DeviceApi(Api):
         if not isinstance(data, dict):
             raise ValueError('data must be of type dict')
 
+        _data = deepcopy(data)  # Make sure the input data isn't modified
         # Strip the skills.json down to the bare essentials
         to_send = {}
-        if 'blacklist' in data:
-            to_send['blacklist'] = data['blacklist']
+        if 'blacklist' in _data:
+            to_send['blacklist'] = _data['blacklist']
         else:
             LOG.warning('skills manifest lacks blacklist entry')
             to_send['blacklist'] = []
 
         # Make sure skills doesn't contain duplicates (keep only last)
-        if 'skills' in data:
-            skills = {s['name']: s for s in data['skills']}
+        if 'skills' in _data:
+            skills = {s['name']: s for s in _data['skills']}
             to_send['skills'] = [skills[key] for key in skills]
         else:
             LOG.warning('skills manifest lacks skills entry')
@@ -442,7 +420,7 @@ class DeviceApi(Api):
 
         self.request({
             "method": "PUT",
-            "path": "/" + self.identity.uuid + "/skillJson",
+            "path": "/" + UUID + "/skillJson",
             "json": to_send
             })
 
@@ -471,6 +449,30 @@ class STTApi(Api):
             "query": {"lang": language, "limit": limit},
             "data": audio
         })
+
+
+class GeolocationApi(Api):
+    """Web API wrapper for performing geolocation lookups."""
+
+    def __init__(self):
+        super().__init__('geolocation')
+
+    def get_geolocation(self, location):
+        """Call the geolocation endpoint.
+
+        Args:
+            location (str): the location to lookup (e.g. Kansas City Missouri)
+
+        Returns:
+            str: JSON structure with lookup results
+        """
+
+        response = self.request(dict(
+            method="GET",
+            query=dict(location=location),
+        ))
+
+        return response['data']
 
 
 def has_been_paired():

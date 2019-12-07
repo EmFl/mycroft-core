@@ -45,6 +45,7 @@ class SkillUpdater:
     def __init__(self, bus=None):
         self.msm_lock = ComboLock('/tmp/mycroft-msm.lck')
         self.install_retries = 0
+        self.config = Configuration.get()
         update_interval = self.config['skills']['update_interval']
         self.update_interval = int(update_interval) * ONE_HOUR
         self.dot_msm_path = os.path.join(self.msm.skills_dir, '.msm')
@@ -78,11 +79,6 @@ class SkillUpdater:
             next_download = time() - 1
 
         return next_download
-
-    @property
-    def config(self):
-        """Property representing the device configuration."""
-        return Configuration.get()
 
     @property
     def installed_skills_file_path(self):
@@ -144,6 +140,7 @@ class SkillUpdater:
             quick (bool): Expedite the download by running with more threads?
         """
         LOG.info('Beginning skill update...')
+        self.msm._device_skill_state = None  # TODO: Proper msm method
         success = True
         if connected():
             self._load_installed_skills()
@@ -190,10 +187,14 @@ class SkillUpdater:
         except MsmException as e:
             LOG.error('Failed to update skills: {}'.format(repr(e)))
 
-    def post_manifest(self):
+    def post_manifest(self, reload_skills_manifest=False):
         """Post the manifest of the device's skills to the backend."""
         upload_allowed = self.config['skills'].get('upload_skill_manifest')
         if upload_allowed and is_paired():
+            if reload_skills_manifest:
+                # TODO: Handle inside msm
+                self.msm._device_skill_state = None
+
             try:
                 device_api = DeviceApi()
                 device_api.upload_skills_data(self.msm.device_skill_state)
